@@ -44,16 +44,26 @@ def authenticate(request: Request, x_api_key: Optional[str], x_actor_id: Optiona
     return Actor(id=actor_id, authenticated=expected is not None)
 
 
-def authorize(actor: Actor, permission: str) -> bool:
-    """Integration point #2: may this actor do this? Baseline: yes (no roles yet)."""
-    return True
+def authorize(actor: Actor, permission: str, settings) -> bool:
+    """Integration point #2: may this actor perform ``permission``?
+
+    When ``API_KEY_PERMISSIONS`` is empty, authenticated and open-dev callers are allowed
+    (backward compatible). When set, the list must include the required permission name.
+    """
+    allowed = settings.api_key_permissions
+    if not allowed:
+        return True
+    return permission in allowed
 
 
 def require_permission(permission: str) -> Callable[..., Actor]:
     def dependency(request: Request, x_api_key: Optional[str] = Header(default=None),
                    x_actor_id: Optional[str] = Header(default=None)) -> Actor:
+        settings = request.app.state.settings
         actor = authenticate(request, x_api_key, x_actor_id)
-        if not authorize(actor, permission):
-            raise PermissionDeniedError()
+        if not authorize(actor, permission, settings):
+            raise PermissionDeniedError(
+                f"Missing permission {permission!r}.",
+                details={"required": permission, "configured": settings.api_key_permissions})
         return actor
     return dependency

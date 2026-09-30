@@ -20,7 +20,9 @@ from app.db.migrate import upgrade_to_head
 from app.db.session import create_db_engine, create_session_factory
 from app.orchestration.pipeline import DEFAULT_PIPELINE, PipelineDefinition
 from app.orchestration.registry import AgentRegistry, build_default_registry
+from app.core.metrics import get_metrics
 from app.services.storage import LocalFileStorage
+from app.workers.executor import BackgroundRunExecutor
 
 log = get_logger("main")
 
@@ -51,6 +53,7 @@ def create_app(settings: Optional[Settings] = None, *, registry: Optional[AgentR
             upgrade_to_head(settings.database_url)  # Alembic is the only schema creator
         log.info("CourtLens backend %s started (env=%s)", __version__, settings.app_env)
         yield
+        app.state.background_executor.shutdown(wait=False)
         engine.dispose()
 
     app = FastAPI(title=settings.app_name, version=__version__, description=_TITLE_DESC,
@@ -61,6 +64,8 @@ def create_app(settings: Optional[Settings] = None, *, registry: Optional[AgentR
     app.state.registry = registry or build_default_registry(settings)
     app.state.pipeline = pipeline
     app.state.storage = LocalFileStorage(settings.storage_dir)
+    app.state.metrics = get_metrics()
+    app.state.background_executor = BackgroundRunExecutor(max_workers=settings.background_worker_threads)
 
     @app.middleware("http")
     async def correlation_id_middleware(request: Request, call_next):

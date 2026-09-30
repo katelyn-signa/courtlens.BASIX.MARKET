@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, CheckConstraint, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -41,6 +41,8 @@ class Document(Base):
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     uploaded_by: Mapped[Optional[str]] = mapped_column(String(100))
     source_reference: Mapped[Optional[str]] = mapped_column(String(255))
+    # OCR output: pages[], full_text, confidence (written by the ocr pipeline stage).
+    ocr_artifacts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
     case = relationship("Case", back_populates="documents")
     evidence_items = relationship("Evidence", back_populates="document", passive_deletes="all")

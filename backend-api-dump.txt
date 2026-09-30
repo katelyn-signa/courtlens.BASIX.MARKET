@@ -1,0 +1,523 @@
+
+==============================
+FILE: .\backend-v2\app\main.py
+==============================
+"""CourtLens backend entry point (Person 4)."""
+
+import uuid
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app import __version__
+from app.api import health
+from app.api.router import build_v1_router
+from app.config import Settings, get_settings
+from app.core.exceptions import AppError
+from app.core.logging import configure_logging, get_logger, request_id_ctx
+from app.db.migrate import upgrade_to_head
+from app.db.session import create_db_engine, create_session_factory
+from app.orchestration.pipeline import DEFAULT_PIPELINE, PipelineDefinition
+from app.orchestration.registry import AgentRegistry, build_default_registry
+from app.services.storage import LocalFileStorage
+
+log = get_logger("main")
+
+_TITLE_DESC = (
+    "CourtLens shared backend: persistent case memory, agent orchestration, human-review "
+    "records and audit history. **Decision-support only**: nothing here grants or refuses bail."
+)
+
+
+def _error(status: int, code: str, message: str, details=None) -> JSONResponse:
+    rid = request_id_ctx.get()
+    return JSONResponse(status_code=status, content={"error": {
+        "code": code, "message": message, "details": details,
+        "request_id": None if rid == "-" else rid}})
+
+
+def create_app(settings: Optional[Settings] = None, *, registry: Optional[AgentRegistry] = None,
+               pipeline: PipelineDefinition = DEFAULT_PIPELINE) -> FastAPI:
+    settings = settings or get_settings()
+    configure_logging(settings.log_level)
+
+    engine = create_db_engine(settings.database_url, echo=False)
+    session_factory = create_session_factory(engine)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if settings.auto_migrate:
+            upgrade_to_head(settings.database_url)  # Alembic is the only schema creator
+        log.info("CourtLens backend %s started (env=%s)", __version__, settings.app_env)
+        yield
+        engine.dispose()
+
+    app = FastAPI(title=settings.app_name, version=__version__, description=_TITLE_DESC,
+                  lifespan=lifespan)
+    app.state.settings = settings
+    app.state.engine = engine
+    app.state.session_factory = session_factory
+    app.state.registry = registry or build_default_registry(settings)
+    app.state.pipeline = pipeline
+    app.state.storage = LocalFileStorage(settings.storage_dir)
+
+    @app.middleware("http")
+    async def correlation_id_middleware(request: Request, call_next):
+        incoming = request.headers.get("X-Request-ID", "")
+        rid = incoming if incoming and len(incoming) <= 100 and incoming.isprintable() \
+            else uuid.uuid4().hex
+        token = request_id_ctx.set(rid)
+        try:
+            response = await call_next(request)
+        finally:
+            request_id_ctx.reset(token)
+        response.headers["X-Request-ID"] = rid
+        return response
+
+    @app.exception_handler(AppError)
+    async def _app_error(request: Request, exc: AppError):
+        return _error(exc.status_code, exc.code, exc.message, exc.details)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(request: Request, exc: RequestValidationError):
+        details = [{"loc": [str(p) for p in e["loc"]], "message": e["msg"], "type": e["type"]}
+                   for e in exc.errors()]  # inputs are intentionally not echoed
+        return _error(422, "VALIDATION_ERROR", "Request validation failed.", details)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error(request: Request, exc: StarletteHTTPException):
+        return _error(exc.status_code, "HTTP_ERROR", str(exc.detail))
+
+    @app.exception_handler(IntegrityError)
+    async def _integrity_error(request: Request, exc: IntegrityError):
+        log.warning("Database integrity error: %s", type(exc.orig).__name__)
+        return _error(409, "DATABASE_INTEGRITY_ERROR", "The request conflicts with existing data.")
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception):
+        log.error("Unhandled %s on %s %s", type(exc).__name__, request.method, request.url.path)
+        return _error(500, "INTERNAL_ERROR", "An unexpected error occurred.")
+
+    app.include_router(health.public_router)
+    app.include_router(build_v1_router(), prefix=settings.api_v1_prefix)
+    return app
+
+
+app = create_app()
+
+==============================
+FILE: .\backend-v2\app\api\router.py
+==============================
+from fastapi import APIRouter
+
+from app.api import analysis, audit, cases, documents, findings, health, reviews
+
+
+def build_v1_router() -> APIRouter:
+    v1 = APIRouter()
+    v1.include_router(health.system_router)
+    v1.include_router(cases.router)
+    v1.include_router(documents.router)
+    v1.include_router(findings.router)
+    v1.include_router(analysis.router)
+    v1.include_router(reviews.router)
+    v1.include_router(audit.router)
+    return v1
+
+==============================
+FILE: .\backend-v2\app\api\cases.py
+==============================
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query
+
+from app.api.deps import CaseId, CaseServiceDep, PageDep
+from app.core.security import CASES_READ, CASES_WRITE, Actor, require_permission
+from app.models.enums import CaseStatus
+from app.schemas.analysis import AnalysisRunRead
+from app.schemas.audit import AuditEventRead
+from app.schemas.case import CaseCreate, CaseRead, CaseUpdate
+from app.schemas.common import Page, page_of
+from app.schemas.document import DocumentRead
+from app.schemas.review import ReviewRead
+
+router = APIRouter(prefix="/cases", tags=["cases"])
+
+
+@router.post("", response_model=CaseRead, status_code=201, summary="Create a case")
+def create_case(body: CaseCreate, service: CaseServiceDep,
+                actor: Actor = Depends(require_permission(CASES_WRITE))):
+    return service.create_case(body, actor.id)
+
+
+@router.get("", response_model=Page[CaseRead], summary="List cases")
+def list_cases(service: CaseServiceDep, page: PageDep,
+               status: Optional[CaseStatus] = None, court_name: Optional[str] = None,
+               fir_number: Optional[str] = None,
+               search: Optional[str] = Query(None, max_length=100),
+               _actor: Actor = Depends(require_permission(CASES_READ))):
+    result = service.cases.list(limit=page.limit, offset=page.offset, status=status,
+                                court_name=court_name, fir_number=fir_number, search=search)
+    return page_of(result, CaseRead)
+
+
+@router.get("/{case_id}", response_model=CaseRead, summary="Get a case")
+def get_case(case_id: CaseId, service: CaseServiceDep,
+             _actor: Actor = Depends(require_permission(CASES_READ))):
+    return service.get_case(case_id)
+
+
+@router.patch("/{case_id}", response_model=CaseRead, summary="Update permitted case metadata")
+def update_case(case_id: CaseId, body: CaseUpdate, service: CaseServiceDep,
+                actor: Actor = Depends(require_permission(CASES_WRITE))):
+    return service.update_case(case_id, body, actor.id)
+
+
+@router.get("/{case_id}/history", summary="Case history: documents, runs, reviews, audit trail")
+def case_history(case_id: CaseId, service: CaseServiceDep,
+                 limit: int = Query(50, ge=1, le=200),
+                 _actor: Actor = Depends(require_permission(CASES_READ))):
+    h = service.history(case_id, limit)
+    return {
+        "case": CaseRead.model_validate(h["case"]),
+        "documents": page_of(h["documents"], DocumentRead),
+        "analysis_runs": page_of(h["analysis_runs"], AnalysisRunRead),
+        "reviews": page_of(h["reviews"], ReviewRead),
+        "audit_events": page_of(h["audit_events"], AuditEventRead),
+    }
+
+==============================
+FILE: .\backend-v2\app\api\analysis.py
+==============================
+from typing import Annotated, Optional
+
+from fastapi import APIRouter, Depends, Header, Query, Response
+
+from app.api.deps import AnalysisServiceDep, CaseId, PageDep, RunId
+from app.core.exceptions import InvalidInputError
+from app.core.security import ANALYSIS_READ, ANALYSIS_RUN, Actor, require_permission
+from app.models.enums import RunStatus
+from app.schemas.analysis import AnalysisRunCreate, AnalysisRunDetail, AnalysisRunRead, StageRead
+from app.schemas.common import Page, page_of
+
+router = APIRouter(tags=["analysis"])
+
+
+@router.post("/cases/{case_id}/analysis-runs", response_model=AnalysisRunDetail, status_code=201,
+             summary="Request (and execute) an analysis run")
+def create_run(case_id: CaseId, response: Response, service: AnalysisServiceDep,
+               body: Optional[AnalysisRunCreate] = None,
+               idempotency_key: Annotated[Optional[str], Header(alias="Idempotency-Key")] = None,
+               actor: Actor = Depends(require_permission(ANALYSIS_RUN))):
+    body = body or AnalysisRunCreate()
+    if idempotency_key and not body.idempotency_key:
+        body = body.model_copy(update={"idempotency_key": idempotency_key[:120]})
+    run, reused = service.request_run(case_id, body, actor.id)
+    if reused:
+        response.status_code = 200
+    message = ("An identical run already exists; returning it (use force=true to run again)."
+               if reused else None)
+    return service.detail(run, reused=reused, message=message)
+
+
+@router.get("/cases/{case_id}/analysis-runs", response_model=Page[AnalysisRunRead],
+            summary="List analysis runs of a case (newest first)")
+def list_runs(case_id: CaseId, service: AnalysisServiceDep, page: PageDep,
+              status: Optional[RunStatus] = None,
+              _actor: Actor = Depends(require_permission(ANALYSIS_READ))):
+    service._case(case_id)
+    return page_of(service.runs.list_runs(case_id, limit=page.limit, offset=page.offset,
+                                          status=status), AnalysisRunRead)
+
+
+@router.get("/analysis-runs/{run_id}", response_model=AnalysisRunDetail,
+            summary="Get an analysis run with stages and summary")
+def get_run(run_id: RunId, service: AnalysisServiceDep,
+            _actor: Actor = Depends(require_permission(ANALYSIS_READ))):
+    return service.detail(service.get_run(run_id))
+
+
+@router.get("/analysis-runs/{run_id}/stages", response_model=list[StageRead],
+            summary="Stage-by-stage status of a run")
+def get_stages(run_id: RunId, service: AnalysisServiceDep,
+               _actor: Actor = Depends(require_permission(ANALYSIS_READ))):
+    return [StageRead.model_validate(s) for s in service.get_run(run_id).stages]
+
+
+@router.post("/analysis-runs/{run_id}/retry", response_model=AnalysisRunDetail, status_code=201,
+             summary="Retry a FAILED / PARTIALLY_COMPLETED run as a new linked attempt")
+def retry_run(run_id: RunId, service: AnalysisServiceDep,
+              actor: Actor = Depends(require_permission(ANALYSIS_RUN))):
+    return service.detail(service.retry_run(run_id, actor.id))
+
+==============================
+FILE: .\backend-v2\app\api\documents.py
+==============================
+from typing import Annotated, Optional
+
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
+
+from app.api.deps import CaseId, DocumentId, DocumentServiceDep, PageDep
+from app.core.security import DOCUMENTS_READ, DOCUMENTS_WRITE, Actor, require_permission
+from app.models.enums import DocumentProcessingStatus
+from app.schemas.common import Page, page_of
+from app.schemas.document import (DocumentRead, DocumentRegister, DocumentRegistrationResult,
+                                  DocumentStatusRead)
+
+router = APIRouter(tags=["documents"])
+
+
+def _result(doc, created: bool, run_id: Optional[str], case_needs_refresh: bool, response: Response):
+    response.status_code = 201 if created else 200
+    return DocumentRegistrationResult(
+        document=DocumentRead.model_validate(doc), created=created,
+        analysis_needs_refresh=case_needs_refresh, triggered_analysis_run_id=run_id)
+
+
+@router.post("/cases/{case_id}/documents", response_model=DocumentRegistrationResult,
+             status_code=201, summary="Register document metadata (idempotent by checksum)")
+def register_document(case_id: CaseId, body: DocumentRegister, response: Response,
+                      service: DocumentServiceDep,
+                      actor: Actor = Depends(require_permission(DOCUMENTS_WRITE))):
+    doc, created, run_id = service.register_document(case_id, body, actor.id)
+    return _result(doc, created, run_id, service.cases.get(case_id).analysis_needs_refresh, response)
+
+
+@router.post("/cases/{case_id}/documents/upload", response_model=DocumentRegistrationResult,
+             status_code=201, summary="Upload a file (validated, stored in private storage)")
+def upload_document(case_id: CaseId, response: Response, service: DocumentServiceDep,
+                    file: Annotated[UploadFile, File(description="The document file")],
+                    document_type: Annotated[Optional[str], Form(max_length=100)] = None,
+                    source_reference: Annotated[Optional[str], Form(max_length=255)] = None,
+                    actor: Actor = Depends(require_permission(DOCUMENTS_WRITE))):
+    doc, created, run_id = service.upload_document(
+        case_id, file.filename or "", file.content_type or "application/octet-stream", file.file,
+        document_type, source_reference, actor.id)
+    return _result(doc, created, run_id, service.cases.get(case_id).analysis_needs_refresh, response)
+
+
+@router.get("/cases/{case_id}/documents", response_model=Page[DocumentRead],
+            summary="List documents of a case")
+def list_documents(case_id: CaseId, service: DocumentServiceDep, page: PageDep,
+                   processing_status: Optional[DocumentProcessingStatus] = None,
+                   document_type: Optional[str] = None,
+                   _actor: Actor = Depends(require_permission(DOCUMENTS_READ))):
+    service._case(case_id)
+    return page_of(service.docs.list_for_case(case_id, limit=page.limit, offset=page.offset,
+                                              processing_status=processing_status,
+                                              document_type=document_type), DocumentRead)
+
+
+@router.get("/documents/{document_id}", response_model=DocumentRead,
+            summary="Get document metadata")
+def get_document(document_id: DocumentId, service: DocumentServiceDep,
+                 _actor: Actor = Depends(require_permission(DOCUMENTS_READ))):
+    return service.get_document(document_id)
+
+
+@router.get("/documents/{document_id}/status", response_model=DocumentStatusRead,
+            summary="Document processing status")
+def document_status(document_id: DocumentId, service: DocumentServiceDep,
+                    _actor: Actor = Depends(require_permission(DOCUMENTS_READ))):
+    doc, count = service.status(document_id)
+    return DocumentStatusRead(
+        document_id=doc.id, version=doc.version, processing_status=doc.processing_status,
+        processing_error=doc.processing_error, processing_updated_at=doc.processing_updated_at,
+        evidence_count=count)
+
+==============================
+FILE: .\backend-v2\app\api\findings.py
+==============================
+"""Read-only retrieval of stored agent outputs (case memory). No analysis logic lives here."""
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends
+
+from app.api.deps import CaseId, CaseServiceDep, PageDep, SessionDep
+from app.core.security import ANALYSIS_READ, Actor, require_permission
+from app.models.enums import ConflictType, ResolutionStatus, ReviewSignal
+from app.repositories.analysis import AnalysisRepository
+from app.schemas.common import Page, page_of
+from app.schemas.conflict import ConflictRead, RuleResultRead
+from app.schemas.evidence import EvidenceRead
+from app.utils.identifiers import DOCUMENT, RUN, id_pattern
+import re
+
+router = APIRouter(prefix="/cases/{case_id}", tags=["findings"])
+
+
+def _check(value: Optional[str], prefix: str, label: str) -> Optional[str]:
+    if value is not None and not re.match(id_pattern(prefix), value):
+        from app.core.exceptions import InvalidInputError
+        raise InvalidInputError(f"Invalid {label} format.")
+    return value
+
+
+@router.get("/evidence", response_model=Page[EvidenceRead],
+            summary="Stored evidence with provenance")
+def list_evidence(case_id: CaseId, cases: CaseServiceDep, session: SessionDep, page: PageDep,
+                  document_id: Optional[str] = None, fact_type: Optional[str] = None,
+                  extraction_run_id: Optional[str] = None,
+                  _actor: Actor = Depends(require_permission(ANALYSIS_READ))):
+    cases.get_case(case_id)
+    result = AnalysisRepository(session).list_evidence(
+        case_id, limit=page.limit, offset=page.offset,
+        document_id=_check(document_id, DOCUMENT, "document_id"), fact_type=fact_type,
+        extraction_run_id=_check(extraction_run_id, RUN, "extraction_run_id"))
+    return page_of(result, EvidenceRead)
+
+
+@router.get("/conflicts", response_model=Page[ConflictRead],
+            summary="Stored conflict and evidence-gap findings")
+def list_conflicts(case_id: CaseId, cases: CaseServiceDep, session: SessionDep, page: PageDep,
+                   analysis_run_id: Optional[str] = None,
+                   conflict_type: Optional[ConflictType] = None,
+                   resolution_status: Optional[ResolutionStatus] = None,
+                   _actor: Actor = Depends(require_permission(ANALYSIS_READ))):
+    cases.get_case(case_id)
+    result = AnalysisRepository(session).list_conflicts(
+        case_id, limit=page.limit, offset=page.offset,
+        analysis_run_id=_check(analysis_run_id, RUN, "analysis_run_id"),
+        conflict_type=conflict_type, resolution_status=resolution_status)
+    return page_of(result, ConflictRead)
+
+
+@router.get("/rule-results", response_model=Page[RuleResultRead],
+            summary="Stored rule-evaluation / reasoning records (not legal decisions)")
+def list_rule_results(case_id: CaseId, cases: CaseServiceDep, session: SessionDep, page: PageDep,
+                      analysis_run_id: Optional[str] = None, rule_id: Optional[str] = None,
+                      review_signal: Optional[ReviewSignal] = None,
+                      _actor: Actor = Depends(require_permission(ANALYSIS_READ))):
+    cases.get_case(case_id)
+    result = AnalysisRepository(session).list_rule_results(
+        case_id, limit=page.limit, offset=page.offset,
+        analysis_run_id=_check(analysis_run_id, RUN, "analysis_run_id"), rule_id=rule_id,
+        review_signal=review_signal)
+    return page_of(result, RuleResultRead)
+
+==============================
+FILE: .\backend-v2\app\api\reviews.py
+==============================
+from typing import Optional
+
+from fastapi import APIRouter, Depends
+
+from app.api.deps import CaseId, CaseServiceDep, PageDep, ReviewId, ReviewServiceDep
+from app.core.exceptions import InvalidInputError
+from app.core.security import REVIEWS_READ, REVIEWS_WRITE, Actor, require_permission
+from app.models.enums import ReviewStatus
+from app.schemas.common import Page, page_of
+from app.schemas.review import InformationRequest, ReviewCreate, ReviewRead, ReviewUpdate
+
+router = APIRouter(tags=["reviews"])
+
+
+@router.post("/cases/{case_id}/reviews", response_model=ReviewRead, status_code=201,
+             summary="Create a human review record")
+def create_review(case_id: CaseId, body: ReviewCreate, service: ReviewServiceDep,
+                  actor: Actor = Depends(require_permission(REVIEWS_WRITE))):
+    return service.create_review(case_id, body, actor.id)
+
+
+@router.get("/cases/{case_id}/reviews", response_model=Page[ReviewRead],
+            summary="List reviews of a case")
+def list_reviews(case_id: CaseId, service: ReviewServiceDep, cases: CaseServiceDep, page: PageDep,
+                 status: Optional[ReviewStatus] = None, analysis_run_id: Optional[str] = None,
+                 reviewer_id: Optional[str] = None,
+                 _actor: Actor = Depends(require_permission(REVIEWS_READ))):
+    cases.get_case(case_id)
+    return page_of(service.reviews.list_for_case(
+        case_id, limit=page.limit, offset=page.offset, status=status,
+        analysis_run_id=analysis_run_id, reviewer_id=reviewer_id), ReviewRead)
+
+
+@router.get("/reviews/{review_id}", response_model=ReviewRead, summary="Get a review")
+def get_review(review_id: ReviewId, service: ReviewServiceDep,
+               _actor: Actor = Depends(require_permission(REVIEWS_READ))):
+    return service.get_review(review_id)
+
+
+@router.patch("/reviews/{review_id}", response_model=ReviewRead,
+              summary="Update review status / notes (validated transitions)")
+def update_review(review_id: ReviewId, body: ReviewUpdate, service: ReviewServiceDep,
+                  actor: Actor = Depends(require_permission(REVIEWS_WRITE))):
+    return service.update_review(review_id, body, actor.id)
+
+
+@router.post("/reviews/{review_id}/request-information", response_model=ReviewRead,
+             summary="Record an additional-information request")
+def request_information(review_id: ReviewId, body: InformationRequest, service: ReviewServiceDep,
+                        actor: Actor = Depends(require_permission(REVIEWS_WRITE))):
+    return service.request_information(review_id, body, actor.id)
+
+==============================
+FILE: .\backend-v2\app\api\health.py
+==============================
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+
+from app import __version__
+from app.api.deps import RegistryDep, SettingsDep
+from app.core.security import SYSTEM_READ, Actor, require_permission
+from app.orchestration.contracts import CONTRACT_VERSION
+
+# Public (unauthenticated) liveness endpoints.
+public_router = APIRouter(tags=["health"])
+# Authenticated system endpoints (mounted under /api/v1).
+system_router = APIRouter(tags=["system"])
+
+
+def _health(request: Request):
+    try:
+        with request.app.state.engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        db, code, status = "ok", 200, "ok"
+    except Exception:  # noqa: BLE001 - never leak connection details
+        db, code, status = "unavailable", 503, "degraded"
+    return JSONResponse(status_code=code, content={
+        "status": status, "version": __version__, "database": db,
+        "timestamp": datetime.now(timezone.utc).isoformat()})
+
+
+@public_router.get("/api/health", summary="Liveness/readiness check")
+def health(request: Request):
+    return _health(request)
+
+
+@public_router.get("/api/v1/health", summary="Liveness/readiness check (versioned)")
+def health_v1(request: Request):
+    return _health(request)
+
+
+@system_router.get("/system/status", summary="Configured integrations and runtime settings")
+def system_status(request: Request, settings: SettingsDep, registry: RegistryDep,
+                  _actor: Actor = Depends(require_permission(SYSTEM_READ))):
+    pipeline = request.app.state.pipeline
+    return {
+        "app": settings.app_name, "version": __version__, "environment": settings.app_env,
+        "contract_version": CONTRACT_VERSION,
+        "database": {"dialect": request.app.state.engine.dialect.name},
+        "authentication": {"api_key_required": settings.api_key_value is not None,
+                           "note": "Development trust boundary; see app/core/security.py."},
+        "agents": registry.describe(),
+        "pipeline": {"version": pipeline.version,
+                     "stages": [{"name": s.name, "agent": s.agent_key.value,
+                                 "required": s.required, "depends_on": list(s.depends_on)}
+                                for s in pipeline.stages]},
+        "orchestration": {"agent_timeout_seconds": settings.agent_timeout_seconds,
+                          "agent_max_attempts": settings.agent_max_attempts,
+                          "max_run_retries": settings.max_run_retries,
+                          "auto_reanalyze_on_new_document": settings.auto_reanalyze_on_new_document},
+        "uploads": {"max_upload_bytes": settings.max_upload_bytes,
+                    "allowed_extensions": settings.allowed_upload_extensions},
+        "ai_provider_configured": bool(settings.ai_provider),
+    }

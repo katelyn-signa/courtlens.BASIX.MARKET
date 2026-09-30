@@ -54,13 +54,21 @@ class Settings(BaseSettings):
     document_agent_class: Optional[str] = None
     conflict_agent_class: Optional[str] = None
     reasoning_agent_class: Optional[str] = None
+    ocr_agent_class: Optional[str] = None
+    evidence_agent_class: Optional[str] = None
+    rule_agent_class: Optional[str] = None
+    summary_agent_class: Optional[str] = None
     enable_demo_agents: bool = False
+    sync_analysis_execution: bool = True
+    background_worker_threads: int = 2
+    api_key_permissions: Annotated[list[str], NoDecode] = []
 
     ai_provider: Optional[str] = None
     ai_provider_api_key: Optional[SecretStr] = None
     ai_provider_base_url: Optional[str] = None
 
-    @field_validator("allowed_upload_extensions", "allowed_upload_mime_types", mode="before")
+    @field_validator("allowed_upload_extensions", "allowed_upload_mime_types",
+                     "api_key_permissions", mode="before")
     @classmethod
     def _csv(cls, value):
         return _split_csv(value)

@@ -56,8 +56,12 @@ def get_case_service(session: SessionDep) -> CaseService:
 
 
 def get_analysis_service(request: Request, session: SessionDep) -> AnalysisService:
-    return AnalysisService(session, request.app.state.settings, request.app.state.registry,
-                           request.app.state.storage, request.app.state.pipeline)
+    return AnalysisService(
+        session, request.app.state.settings, request.app.state.registry,
+        request.app.state.storage, request.app.state.pipeline,
+        session_factory=request.app.state.session_factory,
+        background_executor=getattr(request.app.state, "background_executor", None),
+    )
 
 
 def get_document_service(request: Request, session: SessionDep) -> DocumentService:

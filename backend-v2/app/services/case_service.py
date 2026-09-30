@@ -57,17 +57,24 @@ class CaseService:
                                             code="DUPLICATE_CASE_REFERENCE")
         if "status" in changes:
             ensure_transition(case.status, changes["status"], CASE_TRANSITIONS, "Case status")
+        previous_values: dict[str, object] = {}
+        new_values: dict[str, object] = {}
         for field, value in changes.items():
             attr = "case_metadata" if field == "metadata" else field
             if field == "statutory_sections":
                 value = [s if isinstance(s, dict) else s.model_dump() for s in value]
-            if getattr(case, attr) != value:
+            current = getattr(case, attr)
+            if current != value:
+                previous_values[field] = current
+                new_values[field] = value
                 setattr(case, attr, value)
                 changed.append(field)
         if changed:
             self.audit.record(AuditEventType.CASE_UPDATED, case_id=case.id, actor=actor,
                               resource_type="case", resource_id=case.id,
-                              metadata={"changed_fields": sorted(changed)})
+                              metadata={"changed_fields": sorted(changed),
+                                        "previous_value": previous_values,
+                                        "new_value": new_values})
         self.session.commit()
         return case
 

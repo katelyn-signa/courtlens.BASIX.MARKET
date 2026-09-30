@@ -6,12 +6,12 @@ def test_run_can_be_created_and_queried(env):
     created = env.run(c["id"]).json()
     got = env.client.get(f"/api/v1/analysis-runs/{created['id']}").json()
     assert got["id"] == created["id"] and got["status"] == "COMPLETED"
-    assert got["pipeline_version"] == "1.0" and got["requested_modules"] == [
-        "document_intelligence", "conflict_detection", "reasoning"]
-    assert got["agent_versions"]["reasoning"]["simulated"] is True
+    assert got["pipeline_version"] == "2.0" and got["requested_modules"] == [
+        "ocr", "evidence_extraction", "conflict_detection", "rule_evaluation", "summary_generation"]
+    assert got["agent_versions"]["rule_evaluation"]["simulated"] is True
     assert set(got["output_refs"]) >= {"evidence_ids", "conflict_ids", "rule_result_ids"}
     stages = env.client.get(f"/api/v1/analysis-runs/{created['id']}/stages").json()
-    assert [s["sequence"] for s in stages] == [1, 2, 3]
+    assert [s["sequence"] for s in stages] == [1, 2, 3, 4, 5]
     assert all(s["started_at"] and s["completed_at"] for s in stages)
 
 
@@ -41,7 +41,7 @@ def test_findings_filters(env):
     assert cf["total"] == 1 and cf["items"][0]["resolution_status"] == "UNRESOLVED"
     assert env.client.get(f"{base}/conflicts", params={"resolution_status": "RESOLVED"}).json()["total"] == 0
     rr = env.client.get(f"{base}/rule-results", params={"review_signal": "CONFLICTS_DETECTED"}).json()
-    assert rr["total"] == 1 and rr["items"][0]["rule_id"] == "DEMO-PROCESS-CHECK"
+    assert rr["total"] >= 1 and rr["items"][0]["rule_id"] == "DOC-COMPLETENESS"
     assert env.client.get(f"{base}/rule-results", params={"analysis_run_id": run["id"], "limit": 1}).json()["total"] == 1
 
 

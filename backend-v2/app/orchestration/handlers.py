@@ -19,8 +19,9 @@ from app.models.evidence import Evidence
 from app.models.rule_result import RuleResult
 from app.orchestration.contracts import (
     AgentOutputBase, AgentResultStatus, CaseSnapshot, ConflictAgentInput, ConflictAgentOutput,
-    ConflictRecord, DocumentAgentInput, DocumentAgentOutput, DocumentRef, DocumentResultStatus,
-    EvidenceRecord, ReasoningAgentInput, ReasoningAgentOutput, RuleConfig, CONTRACT_VERSION,
+    ConflictRecord, DocumentRef, DocumentResultStatus, EvidenceAgentInput, EvidenceAgentOutput,
+    EvidenceRecord, OcrAgentInput, OcrAgentOutput, ReasoningAgentInput, ReasoningAgentOutput,
+    RuleConfig, SummaryAgentInput, SummaryAgentOutput, CONTRACT_VERSION,
 )
 from app.orchestration.registry import AgentKey
 from app.repositories.analysis import AnalysisRepository
@@ -118,11 +119,11 @@ class StageHandler:
         return StageStatus.PARTIAL if output.status == AgentResultStatus.PARTIAL else StageStatus.SUCCEEDED
 
 
-# ---- Person 1 ---------------------------------------------------------------------------
+# ---- Stage 1: OCR ----------------------------------------------------------------------
 
-class DocumentIntelligenceHandler(StageHandler):
-    agent_key = AgentKey.DOCUMENT_INTELLIGENCE
-    output_model = DocumentAgentOutput
+class OcrHandler(StageHandler):
+    agent_key = AgentKey.OCR
+    output_model = OcrAgentOutput
 
     def build_request(self, ctx):
         reprocess = bool((ctx.run.options or {}).get("reprocess_documents"))
@@ -131,7 +132,7 @@ class DocumentIntelligenceHandler(StageHandler):
         ctx.scratch["docs_to_process"] = todo
         if not todo:
             return None
-        return DocumentAgentInput(**self._common(ctx), documents=[_doc_ref(d, ctx.storage) for d in todo])
+        return OcrAgentInput(**self._common(ctx), documents=[_doc_ref(d, ctx.storage) for d in todo])
 
     def before_call(self, ctx, request):
         for doc in ctx.scratch["docs_to_process"]:
@@ -140,9 +141,72 @@ class DocumentIntelligenceHandler(StageHandler):
             doc.processing_updated_at = utcnow()
             ctx.audit.record(AuditEventType.DOCUMENT_PROCESSING_STARTED, case_id=ctx.case.id,
                              actor="system", resource_type="document", resource_id=doc.id,
-                             analysis_run_id=ctx.run.id, metadata={"version": doc.version})
+                             analysis_run_id=ctx.run.id, metadata={"version": doc.version, "stage": "ocr"})
 
-    def validate(self, ctx, request, output: DocumentAgentOutput):
+    def validate(self, ctx, request, output: OcrAgentOutput):
+        expected = [d.document_id for d in request.documents]
+        got = [r.document_id for r in output.document_results]
+        if sorted(got) != sorted(expected):
+            raise AgentInvalidOutputError(
+                "document_results must contain exactly one entry per input document.",
+                details={"expected": len(expected), "received": len(got)})
+
+    def persist(self, ctx, request, output: OcrAgentOutput) -> StageOutcome:
+        docs = {d.id: d for d in ctx.scratch["docs_to_process"]}
+        failed_ids: list[str] = []
+        for res in output.document_results:
+            doc = docs[res.document_id]
+            doc.processing_updated_at = utcnow()
+            if res.status == DocumentResultStatus.SUCCESS:
+                doc.ocr_artifacts = {
+                    "pages": [p.model_dump() for p in res.pages],
+                    "full_text": res.full_text,
+                    "confidence": res.confidence,
+                    "extraction_run_id": ctx.run.id,
+                }
+            else:
+                failed_ids.append(doc.id)
+                doc.processing_error = safe_text(
+                    f"{res.error.code}: {res.error.message}" if res.error else "OCR failed.")
+                ctx.audit.record(AuditEventType.DOCUMENT_PROCESSING_FAILED, case_id=ctx.case.id,
+                                 actor="system", resource_type="document", resource_id=doc.id,
+                                 analysis_run_id=ctx.run.id,
+                                 metadata={"error_code": res.error.code if res.error else None, "stage": "ocr"})
+        summary = {"documents_ocrd": len(docs) - len(failed_ids), "documents_failed": len(failed_ids),
+                     "warnings": len(output.warnings)}
+        if failed_ids and len(failed_ids) == len(docs):
+            return StageOutcome(StageStatus.FAILED, summary, "OCR_FAILED", "All documents failed OCR.")
+        status = StageStatus.PARTIAL if failed_ids else self._stage_status(output)
+        return StageOutcome(status, summary)
+
+    def on_failure(self, ctx, request, outcome):
+        for doc in ctx.scratch.get("docs_to_process", []):
+            doc = ctx.session.get(Document, doc.id)
+            if doc and doc.processing_status == DocumentProcessingStatus.PROCESSING:
+                doc.processing_status = DocumentProcessingStatus.FAILED
+                doc.processing_error = safe_text(f"{outcome.error_code}: {outcome.error_summary}")
+                doc.processing_updated_at = utcnow()
+
+
+# ---- Stage 2: evidence extraction ------------------------------------------------------
+
+class EvidenceExtractionHandler(StageHandler):
+    agent_key = AgentKey.EVIDENCE_EXTRACTION
+    output_model = EvidenceAgentOutput
+
+    def build_request(self, ctx):
+        reprocess = bool((ctx.run.options or {}).get("reprocess_documents"))
+        todo = [d for d in ctx.documents
+                if reprocess or d.processing_status != DocumentProcessingStatus.PROCESSED]
+        ctx.scratch["docs_to_process"] = todo
+        if not todo:
+            return None
+        ocr_map = {d.id: dict(d.ocr_artifacts or {}) for d in todo}
+        return EvidenceAgentInput(
+            **self._common(ctx), documents=[_doc_ref(d, ctx.storage) for d in todo],
+            ocr_by_document_id=ocr_map)
+
+    def validate(self, ctx, request, output: EvidenceAgentOutput):
         expected = [d.document_id for d in request.documents]
         got = [r.document_id for r in output.document_results]
         if sorted(got) != sorted(expected):
@@ -157,7 +221,7 @@ class DocumentIntelligenceHandler(StageHandler):
             if fact.source_document_id in failed:
                 raise AgentInvalidOutputError("A fact was returned for a document reported as FAILED.")
 
-    def persist(self, ctx, request, output: DocumentAgentOutput) -> StageOutcome:
+    def persist(self, ctx, request, output: EvidenceAgentOutput) -> StageOutcome:
         docs = {d.id: d for d in ctx.scratch["docs_to_process"]}
         failed_ids: list[str] = []
         for res in output.document_results:
@@ -173,11 +237,7 @@ class DocumentIntelligenceHandler(StageHandler):
                 failed_ids.append(doc.id)
                 doc.processing_status = DocumentProcessingStatus.FAILED
                 doc.processing_error = safe_text(
-                    f"{res.error.code}: {res.error.message}" if res.error else "Processing failed.")
-                ctx.audit.record(AuditEventType.DOCUMENT_PROCESSING_FAILED, case_id=ctx.case.id,
-                                 actor="system", resource_type="document", resource_id=doc.id,
-                                 analysis_run_id=ctx.run.id,
-                                 metadata={"error_code": res.error.code if res.error else None})
+                    f"{res.error.code}: {res.error.message}" if res.error else "Extraction failed.")
         rows = [Evidence(
             case_id=ctx.case.id, document_id=f.source_document_id, fact_type=f.fact_type.value,
             fact_value=f.value, entity_ref=f.entity_ref, category=f.category,
@@ -195,23 +255,10 @@ class DocumentIntelligenceHandler(StageHandler):
                    "documents_failed": len(failed_ids), "evidence_count": len(rows),
                    "evidence_ids": [r.id for r in rows], "warnings": len(output.warnings)}
         if failed_ids and len(failed_ids) == len(docs):
-            return StageOutcome(StageStatus.FAILED, summary, "DOCUMENT_PROCESSING_FAILED",
-                                "All documents failed processing.")
+            return StageOutcome(StageStatus.FAILED, summary, "EVIDENCE_EXTRACTION_FAILED",
+                                "All documents failed evidence extraction.")
         status = StageStatus.PARTIAL if failed_ids else self._stage_status(output)
         return StageOutcome(status, summary)
-
-    def on_failure(self, ctx, request, outcome):
-        # Agent-level failure after documents were marked PROCESSING: mark them FAILED.
-        for doc in ctx.scratch.get("docs_to_process", []):
-            doc = ctx.session.get(Document, doc.id)
-            if doc and doc.processing_status == DocumentProcessingStatus.PROCESSING:
-                doc.processing_status = DocumentProcessingStatus.FAILED
-                doc.processing_error = safe_text(f"{outcome.error_code}: {outcome.error_summary}")
-                doc.processing_updated_at = utcnow()
-                ctx.audit.record(AuditEventType.DOCUMENT_PROCESSING_FAILED, case_id=ctx.case.id,
-                                 actor="system", resource_type="document", resource_id=doc.id,
-                                 analysis_run_id=ctx.run.id,
-                                 metadata={"error_code": outcome.error_code})
 
 
 # ---- Person 2 ---------------------------------------------------------------------------
@@ -257,10 +304,10 @@ class ConflictDetectionHandler(StageHandler):
                              "warnings": len(output.warnings)})
 
 
-# ---- Person 3 ---------------------------------------------------------------------------
+# ---- Stage 4: rule evaluation ----------------------------------------------------------
 
-class ReasoningHandler(StageHandler):
-    agent_key = AgentKey.REASONING
+class RuleEvaluationHandler(StageHandler):
+    agent_key = AgentKey.RULE_EVALUATION
     output_model = ReasoningAgentOutput
 
     def build_request(self, ctx):
@@ -314,8 +361,54 @@ class ReasoningHandler(StageHandler):
                              "warnings": len(output.warnings)})
 
 
+# ---- Stage 5: summary generation -------------------------------------------------------
+
+class SummaryGenerationHandler(StageHandler):
+    agent_key = AgentKey.SUMMARY_GENERATION
+    output_model = SummaryAgentOutput
+
+    def build_request(self, ctx):
+        evidence = ctx.repo.evidence_for_documents([d.id for d in ctx.documents])
+        conflict_run = ctx.output_run_ids.get("conflict_detection")
+        conflicts = ctx.repo.conflicts_for_run(conflict_run) if conflict_run else []
+        rule_run = ctx.output_run_ids.get("rule_evaluation")
+        rules = ctx.repo.rule_results_for_run(rule_run) if rule_run else []
+        from app.orchestration.contracts import RuleEvaluation
+        return SummaryAgentInput(
+            **self._common(ctx), documents=[_doc_ref(d, ctx.storage) for d in ctx.documents],
+            evidence=[_evidence_record(e) for e in evidence],
+            conflicts=[ConflictRecord(
+                conflict_id=c.id, conflict_type=c.conflict_type, description=c.description,
+                severity=c.severity, related_evidence_ids=c.related_evidence_ids,
+                related_document_ids=c.related_document_ids,
+                missing_information=c.missing_information,
+                resolution_status=c.resolution_status) for c in conflicts],
+            rule_evaluations=[RuleEvaluation(
+                rule_id=r.rule_id, rule_version=r.rule_version,
+                evaluation_status=r.evaluation_status, review_signal=r.review_signal,
+                explanation=r.explanation, input_evidence_ids=r.input_evidence_ids,
+                missing_prerequisites=r.missing_prerequisites, limitations=r.limitations,
+                evaluated_at=r.evaluated_at, output_schema_version=r.output_schema_version)
+                for r in rules])
+
+    def persist(self, ctx, request, output: SummaryAgentOutput) -> StageOutcome:
+        block = output.summary
+        summary = {
+            "case_summary": block.case_summary[:500],
+            "timeline_events": len(block.timeline),
+            "key_evidence_count": len(block.key_evidence),
+            "missing_evidence_count": len(block.missing_evidence),
+            "review_recommendations_count": len(block.review_recommendations),
+            "full_summary": block.model_dump(),
+        }
+        ctx.scratch["case_summary"] = block.model_dump()
+        return StageOutcome(self._stage_status(output), summary)
+
+
 HANDLERS: dict[AgentKey, StageHandler] = {
-    AgentKey.DOCUMENT_INTELLIGENCE: DocumentIntelligenceHandler(),
+    AgentKey.OCR: OcrHandler(),
+    AgentKey.EVIDENCE_EXTRACTION: EvidenceExtractionHandler(),
     AgentKey.CONFLICT_DETECTION: ConflictDetectionHandler(),
-    AgentKey.REASONING: ReasoningHandler(),
+    AgentKey.RULE_EVALUATION: RuleEvaluationHandler(),
+    AgentKey.SUMMARY_GENERATION: SummaryGenerationHandler(),
 }

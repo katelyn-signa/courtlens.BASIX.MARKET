@@ -26,6 +26,7 @@ from app.core.exceptions import (
     AnalysisRunNotFoundError,
 )
 from app.core.logging import get_logger
+from app.core.metrics import get_metrics, observe_duration
 from app.core.state import RUN_TRANSITIONS, ensure_transition
 from app.models.analysis_run import AnalysisRun, AnalysisStage
 from app.models.case import Case
@@ -73,8 +74,9 @@ class Orchestrator:
                           metadata={"attempt": run.attempt_number, "trigger": run.trigger_type.value})
         self.session.commit()
         try:
-            self._execute_stages(run, actor)
-            self._finalize(run, actor)
+            with observe_duration("pipeline_run", run_id=run_id):
+                self._execute_stages(run, actor)
+                self._finalize(run, actor)
         except Exception as exc:  # noqa: BLE001 - last-resort guard, never leaks details
             self.session.rollback()
             log.error("Orchestrator internal error for %s: %s", run_id, type(exc).__name__)
@@ -134,8 +136,11 @@ class Orchestrator:
                     stage.is_simulated = registration.source == "demo"
                     handler.before_call(ctx, request)
                     self.session.commit()
+                    stage_started = time.perf_counter()
                     raw = self._call_agent(getattr(registration.agent, definition.method),
                                            request, attempts)
+                    get_metrics().observe("agent_stage_seconds", time.perf_counter() - stage_started,
+                                          stage=stage.stage_name)
                     output = self._coerce(handler, raw)
                     if output.status == AgentResultStatus.FAILED:
                         first = output.errors[0] if output.errors else None
@@ -236,6 +241,7 @@ class Orchestrator:
                                     "pipeline_version": run.pipeline_version})
         self.session.commit()
         log.info("Run %s finished: %s", run.id, final.value)
+        get_metrics().inc("analysis_runs_total", status=final.value)
 
     def _fail_internal(self, run_id: str, exc: Exception) -> None:
         run = self.session.get(AnalysisRun, run_id)

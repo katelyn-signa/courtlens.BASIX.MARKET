@@ -1,6 +1,35 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import * as authApi from '../api/auth';
 import type { Role, Session } from '../types';
+
+/** Hackathon demo only — replace with real auth when the backend is ready. */
+const DEMO_SESSION_KEY = 'courtlens_demo_session';
+
+interface DemoStoredSession {
+  role: Role;
+  name: string;
+}
+
+function readDemoSession(): Session | null {
+  try {
+    const raw = localStorage.getItem(DEMO_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as DemoStoredSession;
+    if (parsed.role !== 'LAWYER' && parsed.role !== 'GUARDIAN') return null;
+    return { role: parsed.role, displayName: parsed.name };
+  } catch {
+    return null;
+  }
+}
+
+function writeDemoSession(role: Role): Session {
+  const stored: DemoStoredSession = { role, name: 'Demo User' };
+  localStorage.setItem(DEMO_SESSION_KEY, JSON.stringify(stored));
+  return { role, displayName: 'Demo User' };
+}
+
+function clearDemoSession(): void {
+  localStorage.removeItem(DEMO_SESSION_KEY);
+}
 
 interface AuthValue {
   session: Session | null;
@@ -15,16 +44,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    authApi.fetchSession().then(setSession).catch(() => setSession(null)).finally(() => setLoading(false));
+    setSession(readDemoSession());
+    setLoading(false);
   }, []);
 
-  const login = useCallback(async (role: Role, creds: Record<string, string>) => {
-    const s = await authApi.login(role, creds);
+  const login = useCallback(async (role: Role, _creds: Record<string, string>) => {
+    void _creds;
+    const s = writeDemoSession(role);
     setSession(s);
     return s;
   }, []);
   const logout = useCallback(async () => {
-    try { await authApi.logout(); } finally { setSession(null); }
+    clearDemoSession();
+    setSession(null);
   }, []);
 
   const value = useMemo(() => ({ session, loading, login, logout }), [session, loading, login, logout]);

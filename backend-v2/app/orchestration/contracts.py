@@ -307,6 +307,66 @@ class ReasoningAgentOutput(AgentOutputBase):
     evaluations: list[RuleEvaluation] = Field(default_factory=list)
 
 
+# ---- OCR (stage 1) ---------------------------------------------------------------------
+
+class OcrPageResult(_Strict):
+    page: int = Field(ge=1)
+    text: str = Field(max_length=500_000)
+    confidence: Optional[float] = Field(default=None, ge=0, le=1)
+
+
+class OcrDocumentResult(_Strict):
+    document_id: str = Field(pattern=DOC_ID)
+    status: DocumentResultStatus
+    pages: list[OcrPageResult] = Field(default_factory=list)
+    full_text: str = Field(default="", max_length=2_000_000)
+    confidence: Optional[float] = Field(default=None, ge=0, le=1)
+    error: Optional[AgentIssue] = None
+
+
+class OcrAgentInput(AgentInputBase):
+    documents: list[DocumentRef] = Field(min_length=1)
+
+
+class OcrAgentOutput(AgentOutputBase):
+    document_results: list[OcrDocumentResult] = Field(default_factory=list)
+
+
+# ---- Evidence extraction (stage 2) -----------------------------------------------------
+
+class EvidenceAgentInput(AgentInputBase):
+    documents: list[DocumentRef] = Field(min_length=1)
+    ocr_by_document_id: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class EvidenceAgentOutput(AgentOutputBase):
+    facts: list[ExtractedFact] = Field(default_factory=list)
+    document_results: list[DocumentProcessingResult] = Field(default_factory=list)
+
+
+# ---- Summary generation (stage 5) ----------------------------------------------------
+
+class SummaryAgentInput(AgentInputBase):
+    documents: list[DocumentRef] = Field(default_factory=list)
+    evidence: list[EvidenceRecord] = Field(default_factory=list)
+    conflicts: list[ConflictRecord] = Field(default_factory=list)
+    rule_evaluations: list[RuleEvaluation] = Field(default_factory=list)
+
+
+class CaseSummaryBlock(_Strict):
+    case_summary: str = Field(min_length=1, max_length=8000)
+    document_summary: str = Field(default="", max_length=8000)
+    timeline: list[dict[str, Any]] = Field(default_factory=list)
+    key_evidence: list[str] = Field(default_factory=list)
+    conflicts_overview: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    review_recommendations: list[str] = Field(default_factory=list)
+
+
+class SummaryAgentOutput(AgentOutputBase):
+    summary: CaseSummaryBlock
+
+
 # ---- Python interfaces (what Persons 1/2/3 implement) ----------------------------------
 
 @runtime_checkable

@@ -39,12 +39,15 @@ def _fingerprint(docs: list[dict], modules: list[str], pipeline_version: str, op
 
 class AnalysisService:
     def __init__(self, session: Session, settings: Settings, registry: AgentRegistry,
-                 storage: LocalFileStorage, pipeline: PipelineDefinition = DEFAULT_PIPELINE):
+                 storage: LocalFileStorage, pipeline: PipelineDefinition = DEFAULT_PIPELINE,
+                 *, session_factory=None, background_executor=None):
         self.session = session
         self.settings = settings
         self.registry = registry
         self.storage = storage
         self.pipeline = pipeline
+        self._session_factory = session_factory
+        self._background_executor = background_executor
         self.cases = CaseRepository(session)
         self.docs = DocumentRepository(session)
         self.runs = AnalysisRepository(session)
@@ -128,7 +131,15 @@ class AnalysisService:
             self.session.rollback()
             raise DuplicateRequestError("Duplicate analysis request.",
                                         code="DUPLICATE_ANALYSIS_REQUEST") from None
-        return self._execute(run.id, actor), False
+        if self.settings.sync_analysis_execution or self._background_executor is None:
+            return self._execute(run.id, actor), False
+        from app.workers.executor import run_analysis_in_background
+
+        self._background_executor.submit(run_analysis_in_background(
+            self._session_factory, self.settings, self.registry, self.storage, self.pipeline,
+            run.id, actor))
+        self.session.refresh(run)
+        return run, False
 
     # ---- retry ----
     def retry_run(self, run_id: str, actor: str) -> AnalysisRun:
@@ -203,10 +214,11 @@ class AnalysisService:
         stages = list(run.stages)
         summary = RunSummary()
         by_name = {s.stage_name: s for s in stages}
-        ev = by_name.get("document_intelligence")
+        ev = by_name.get("evidence_extraction") or by_name.get("document_intelligence")
         summary.evidence_count = len(run.output_refs.get("evidence_ids", [])) if run.output_refs \
             else int((ev.output_summary or {}).get("evidence_count", 0)) if ev else 0
-        cs, rs = by_name.get("conflict_detection"), by_name.get("reasoning")
+        cs, rs = by_name.get("conflict_detection"), (
+            by_name.get("rule_evaluation") or by_name.get("reasoning"))
         if cs and cs.output_run_id:
             summary.conflict_count = len(self.runs.conflicts_for_run(cs.output_run_id))
         if rs and rs.output_run_id:

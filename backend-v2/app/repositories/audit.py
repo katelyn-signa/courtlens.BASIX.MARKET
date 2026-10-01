@@ -22,7 +22,8 @@ class AuditRepository:
     def list(self, *, limit: int, offset: int, case_id: Optional[str] = None,
              analysis_run_id: Optional[str] = None, event_type: Optional[str] = None,
              actor: Optional[str] = None, since: Optional[datetime] = None,
-             until: Optional[datetime] = None, newest_first: bool = False
+             until: Optional[datetime] = None, newest_first: bool = False,
+             event_types: Optional[list[str]] = None
              ) -> PageResult[AuditEvent]:
         stmt = select(AuditEvent)
         if case_id:
@@ -31,6 +32,8 @@ class AuditRepository:
             stmt = stmt.where(AuditEvent.analysis_run_id == analysis_run_id)
         if event_type:
             stmt = stmt.where(AuditEvent.event_type == event_type)
+        if event_types:
+            stmt = stmt.where(AuditEvent.event_type.in_(event_types))
         if actor:
             stmt = stmt.where(AuditEvent.actor == actor)
         if since:

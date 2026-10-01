@@ -14,6 +14,10 @@ export async function getResource(key: EndpointKey, params: Record<string, strin
 
   // /history is a composite object. Adapt its UI-specific collections into
   // the array contract expected by ResourcePage.
+  if (key === 'missingEvidence' && Array.isArray(data)) {
+    return data.filter((item) => isRecord(item) && typeof item.missing_information === 'string' && item.missing_information.trim().length > 0);
+  }
+
   if (key === 'timeline' && isRecord(data)) {
     return isRecord(data.audit_events) && 'items' in data.audit_events
       ? toList(data.audit_events)

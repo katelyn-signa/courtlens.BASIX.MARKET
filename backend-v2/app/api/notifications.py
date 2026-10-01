@@ -46,11 +46,11 @@ def list_notifications(
         limit=page.limit,
         offset=page.offset,
         newest_first=True,
+        event_types=list(_NOTIFICATION_EVENTS),
     )
-    filtered = [event for event in result.items if str(event.event_type) in _NOTIFICATION_EVENTS]
     return Page[AuditEventRead](
-        items=[AuditEventRead.model_validate(event) for event in filtered],
-        total=len(filtered),
+        items=[AuditEventRead.model_validate(event) for event in result.items],
+        total=result.total,
         limit=page.limit,
         offset=page.offset,
     )

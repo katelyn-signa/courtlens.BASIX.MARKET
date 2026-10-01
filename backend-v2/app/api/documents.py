@@ -41,6 +41,17 @@ def upload_document(case_id: CaseId, response: Response, service: DocumentServic
     return _result(doc, created, run_id, service.cases.get(case_id).analysis_needs_refresh, response)
 
 
+@router.get("/documents", response_model=Page[DocumentRead],
+            summary="List documents across accessible cases")
+def list_all_documents(service: DocumentServiceDep, page: PageDep,
+                       processing_status: Optional[DocumentProcessingStatus] = None,
+                       document_type: Optional[str] = None,
+                       _actor: Actor = Depends(require_permission(DOCUMENTS_READ))):
+    return page_of(service.list_all(
+        limit=page.limit, offset=page.offset,
+        processing_status=processing_status, document_type=document_type), DocumentRead)
+
+
 @router.get("/cases/{case_id}/documents", response_model=Page[DocumentRead],
             summary="List documents of a case")
 def list_documents(case_id: CaseId, service: DocumentServiceDep, page: PageDep,

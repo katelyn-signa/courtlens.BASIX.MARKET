@@ -17,3 +17,20 @@ export function classifyError(e: unknown): ErrorKind {
   }
   return 'other';
 }
+
+export function errorMessage(e: unknown, fallback = 'Request failed. Please try again.'): string {
+  if (e instanceof NotConfiguredError) return e.message;
+  if (axios.isAxiosError(e)) {
+    const data = e.response?.data as unknown;
+    if (typeof data === 'object' && data !== null && 'error' in data) {
+      const body = (data as { error?: unknown }).error;
+      if (typeof body === 'object' && body !== null && 'message' in body) {
+        const message = (body as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim()) return message;
+      }
+    }
+    if (typeof e.message === 'string' && e.message.trim()) return e.message;
+  }
+  if (e instanceof Error && e.message.trim()) return e.message;
+  return fallback;
+}

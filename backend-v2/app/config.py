@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     auto_migrate: bool = True
 
     api_v1_prefix: str = "/api/v1"
+    cors_allowed_origins: Annotated[list[str], NoDecode] = [
+        "http://localhost:5173", "http://127.0.0.1:5173",
+    ]
 
     storage_dir: str = "./storage"
     max_upload_bytes: int = 10 * 1024 * 1024
@@ -68,7 +71,7 @@ class Settings(BaseSettings):
     ai_provider_base_url: Optional[str] = None
 
     @field_validator("allowed_upload_extensions", "allowed_upload_mime_types",
-                     "api_key_permissions", mode="before")
+                     "api_key_permissions", "cors_allowed_origins", mode="before")
     @classmethod
     def _csv(cls, value):
         return _split_csv(value)

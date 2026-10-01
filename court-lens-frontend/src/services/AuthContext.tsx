@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { Role, Session } from '../types';
+import { fetchSession, login as apiLogin, logout as apiLogout } from '../api/auth';
+import { classifyError } from '../api/errors';
 
-/** Hackathon demo only — replace with real auth when the backend is ready. */
 const DEMO_SESSION_KEY = 'courtlens_demo_session';
 
 interface DemoStoredSession {
@@ -44,19 +45,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setSession(readDemoSession());
-    setLoading(false);
+    let active = true;
+    void fetchSession()
+      .then((s) => { if (active) setSession(s); })
+      .catch((e) => {
+        if (classifyError(e) === 'not_configured') {
+          if (active) setSession(readDemoSession());
+        } else if (active) {
+          setSession(null);
+        }
+      })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, []);
 
-  const login = useCallback(async (role: Role, _creds: Record<string, string>) => {
-    void _creds;
-    const s = writeDemoSession(role);
-    setSession(s);
-    return s;
+  const login = useCallback(async (role: Role, creds: Record<string, string>) => {
+    try {
+      const s = await apiLogin(role, creds);
+      setSession(s);
+      return s;
+    } catch (e) {
+      // Current backend has no login endpoint; retain demo role selection while
+      // still using real API calls for all case/evidence data.
+      if (classifyError(e) === 'not_configured') {
+        const s = writeDemoSession(role);
+        setSession(s);
+        return s;
+      }
+      throw e;
+    }
   }, []);
+
   const logout = useCallback(async () => {
-    clearDemoSession();
-    setSession(null);
+    try { await apiLogout(); } finally {
+      clearDemoSession();
+      setSession(null);
+    }
   }, []);
 
   const value = useMemo(() => ({ session, loading, login, logout }), [session, loading, login, logout]);

@@ -63,7 +63,7 @@ def create_app(settings: Optional[Settings] = None, *, registry: Optional[AgentR
     # Frontend is a separate Vite origin during local development.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

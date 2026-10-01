@@ -35,7 +35,7 @@ def test_successful_pipeline_persists_everything(env):
     cf = env.client.get(f"/api/v1/cases/{c['id']}/conflicts").json()
     assert {x["conflict_type"] for x in cf["items"]} >= {"MISSING_EVIDENCE"}
     rr = env.client.get(f"/api/v1/cases/{c['id']}/rule-results").json()
-    assert rr["total"] >= 1 and "Simulated" in rr["items"][0]["notice"]
+    assert rr["total"] >= 1 and any("Simulated" in limitation for item in rr["items"] for limitation in item["limitations"])
     docs = env.client.get(f"/api/v1/cases/{c['id']}/documents").json()["items"]
     assert {d["processing_status"] for d in docs} == {"PROCESSED"}
     assert env.client.get(f"/api/v1/cases/{c['id']}").json()["analysis_needs_refresh"] is False
@@ -247,7 +247,7 @@ def test_run_validation(env):
     assert env.client.get("/api/v1/analysis-runs/bad").status_code == 422
     assert env.client.post("/api/v1/analysis-runs/run_" + "0" * 21 + "/retry").status_code == 404
     ok = env.run(c["id"], requested_modules=["conflict_detection"], document_ids=[d["id"]])
-    assert [s["stage_name"] for s in ok.json()["stages"]] == ["document_intelligence", "conflict_detection"]
+    assert [s["stage_name"] for s in ok.json()["stages"]] == ["ocr", "evidence_extraction", "conflict_detection"]
 
 
 def test_retry_rejected_for_completed_run(env):

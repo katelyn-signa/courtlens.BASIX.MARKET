@@ -27,7 +27,7 @@ export const endpoints: Record<EndpointKey, string | undefined> = {
   // Backend conflicts explicitly include evidence-gap findings, so this is the closest supported resource.
   missingEvidence: '/cases/{caseId}/conflicts',
   notifications: undefined,
-  documents: undefined,
+  documents: '/documents',
 
   upload: '/cases/{caseId}/documents/upload'
 };

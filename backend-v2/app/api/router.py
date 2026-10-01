@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api import analysis, audit, cases, documents, findings, health, metrics, reviews
+from app.api import analysis, audit, cases, documents, findings, health, metrics, notifications, reviews
 
 
 def build_v1_router() -> APIRouter:
@@ -13,4 +13,5 @@ def build_v1_router() -> APIRouter:
     v1.include_router(analysis.router)
     v1.include_router(reviews.router)
     v1.include_router(audit.router)
+    v1.include_router(notifications.router)
     return v1

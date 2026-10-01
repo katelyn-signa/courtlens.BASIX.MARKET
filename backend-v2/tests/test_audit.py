@@ -17,7 +17,7 @@ def test_audit_trail_for_case_lifecycle(env):
     types = [e["event_type"] for e in data["items"]]
     assert types[:3] == ["CASE_CREATED", "CASE_UPDATED", "DOCUMENT_REGISTERED"]
     upd = data["items"][1]
-    assert upd["actor"] == "clerk-7" and upd["metadata"] == {"changed_fields": ["court_name"]}
+    assert upd["actor"] == "clerk-7" and upd["metadata"] == {"changed_fields": ["court_name"], "previous_value": {"court_name": None}, "new_value": {"court_name": "Court Z"}}
     assert upd["resource_type"] == "case" and upd["resource_id"] == c["id"] and upd["correlation_id"]
 
 

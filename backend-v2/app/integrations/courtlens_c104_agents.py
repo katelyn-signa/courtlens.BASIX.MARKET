@@ -38,7 +38,7 @@ from app.orchestration.contracts import (
 )
 
 DATE_RE = re.compile(
-    r"(?P<day>\\d{1,2})\\s+(?P<month>January|February|March|April|May|June|July|August|September|October|November|December)\\s+(?P<year>\\d{4})",
+    r"(?P<day>\d{1,2})\s+(?P<month>January|February|March|April|May|June|July|August|September|October|November|December)\s+(?P<year>\d{4})",
     re.I,
 )
 

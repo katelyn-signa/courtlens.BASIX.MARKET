@@ -36,7 +36,8 @@ def test_system_status_reports_agents_without_secrets(make_env, empty_registry):
 
 def test_system_status_shows_demo_agents_as_simulated(env):
     agents = env.client.get("/api/v1/system/status").json()["agents"]
-    assert agents["rule_evaluation"]["is_simulated"] is True\n    assert agents["summary_generation"]["is_simulated"] is True
+    assert agents["rule_evaluation"]["is_simulated"] is True
+    assert agents["summary_generation"]["is_simulated"] is True
 
 
 def test_api_key_enforced_but_health_open(make_env):

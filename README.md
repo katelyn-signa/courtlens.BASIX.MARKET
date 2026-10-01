@@ -1,3 +1,90 @@
+# CourtLens — Integrated Project Architecture
+
+> Current integration target: **React/Vite frontend + FastAPI backend-v2 + SQLite/Alembic**.  
+> The backend exposes its shared API under `/api/v1`; the frontend is configured to consume that contract.
+
+## Current architecture
+
+```
+Browser
+  │
+  │ React 18 + TypeScript + Vite
+  │ Axios + TanStack Query
+  ▼
+court-lens-frontend
+  │
+  │ HTTP / JSON + multipart upload
+  │ X-API-Key (optional) + X-Actor-Id
+  ▼
+backend-v2
+  │
+  ├── FastAPI /api/v1
+  ├── Cases
+  ├── Documents & uploads
+  ├── Evidence / conflicts / rule results
+  ├── Analysis runs
+  ├── Reviews
+  ├── Audit events
+  └── System metrics/health
+  │
+  ├── SQLAlchemy
+  ├── Alembic migrations
+  ├── SQLite (local/demo)
+  ├── private local storage
+  └── orchestration / agents
+```
+
+### Integration contract
+
+- Frontend API base: `http://localhost:8000/api/v1`
+- Public health: `http://localhost:8000/api/health`
+- Frontend dev server: `http://localhost:5173`
+- Backend CORS allows the two local Vite origins by default.
+- Backend API-key authentication is optional in development.
+- Frontend authentication is currently a **demo role/session layer** because backend login/session endpoints are not implemented. It must not be presented as production authentication.
+- Backend outputs are decision-support/workflow signals and require human review; they do not make legal decisions.
+
+## Run the integrated stack
+
+### Terminal 1 — Backend
+
+```powershell
+cd backend-v2
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m uvicorn app.main:app --reload
+```
+
+### Terminal 2 — Frontend
+
+```powershell
+cd court-lens-frontend
+npm install
+Copy-Item .env.example .env
+npm run dev
+```
+
+Open the Vite URL shown in the terminal, normally `http://localhost:5173`.
+
+### Optional API key
+
+If you set `API_KEY` in `backend-v2/.env`, put the same value in `court-lens-frontend/.env` as `VITE_API_KEY`. The frontend sends it as `X-API-Key`.
+
+## Verification checklist
+
+1. Open `http://localhost:8000/api/health` — backend should return a healthy response.
+2. Open the frontend at `http://localhost:5173`.
+3. Sign in using the existing demo role flow.
+4. Case lists should load from `GET /api/v1/cases`.
+5. Case pages should resolve `{caseId}` correctly.
+6. Evidence, conflicts, analysis runs and history should consume their backend v1 resources.
+7. Evidence/document upload should use `POST /api/v1/cases/{caseId}/documents/upload`.
+8. Do not commit either `.env` file; only the example files belong in Git.
+
+---
+
 # CourtLens Member 2: Document Intelligence
 
 ## What this module does

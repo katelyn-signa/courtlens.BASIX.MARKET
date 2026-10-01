@@ -41,6 +41,17 @@ class DocumentRepository:
             latest[doc.filename] = doc
         return sorted(latest.values(), key=lambda d: (d.uploaded_at, d.id))
 
+    def list_all(self, *, limit: int, offset: int,
+                 processing_status: Optional[DocumentProcessingStatus] = None,
+                 document_type: Optional[str] = None) -> PageResult[Document]:
+        stmt = select(Document)
+        if processing_status:
+            stmt = stmt.where(Document.processing_status == processing_status)
+        if document_type:
+            stmt = stmt.where(Document.document_type == document_type)
+        stmt = stmt.order_by(Document.uploaded_at.desc(), Document.id.desc())
+        return paginate(self.session, stmt, limit=limit, offset=offset)
+
     def list_for_case(self, case_id: str, *, limit: int, offset: int,
                       processing_status: Optional[DocumentProcessingStatus] = None,
                       document_type: Optional[str] = None) -> PageResult[Document]:

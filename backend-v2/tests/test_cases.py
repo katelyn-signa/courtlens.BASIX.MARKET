@@ -116,3 +116,14 @@ def test_storage_resolve_blocks_traversal(tmp_path):
         with pytest.raises(InvalidInputError):
             s.resolve(bad)
     assert s.resolve("ok/file.pdf").is_relative_to(tmp_path.resolve())
+
+
+def test_global_document_listing(env):
+    a, b = env.case(), env.case()
+    env.doc(a["id"], "a.pdf", "case-a")
+    env.doc(b["id"], "b.pdf", "case-b")
+    page = env.client.get("/api/v1/documents", params={"limit": 1, "offset": 0}).json()
+    assert page["total"] == 2
+    assert len(page["items"]) == 1
+    all_docs = env.client.get("/api/v1/documents", params={"limit": 20}).json()
+    assert {d["case_id"] for d in all_docs["items"]} == {a["id"], b["id"]}

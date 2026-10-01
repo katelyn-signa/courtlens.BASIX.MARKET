@@ -1,8 +1,4 @@
-/**
- * BACKEND INTEGRATION POINT #1
- * Fill these in from the backend specification. Use {param} for path params.
- * Left undefined on purpose: the frontend never guesses endpoint URLs.
- */
+/** CourtLens backend v1 API contract. */
 export type EndpointKey =
   | 'login' | 'logout' | 'me'
   | 'dashboard' | 'cases' | 'case'
@@ -11,34 +7,41 @@ export type EndpointKey =
   | 'documents' | 'notifications' | 'upload';
 
 export const endpoints: Record<EndpointKey, string | undefined> = {
+  // The backend currently uses development API-key auth, not a login/session API.
   login: undefined,
   logout: undefined,
   me: undefined,
-  dashboard: undefined,
-  cases: undefined,
-  case: undefined,           // e.g. '/…/{caseId}'
-  evidence: undefined,
-  conflicts: undefined,
+
+  // Existing backend resources.
+  dashboard: '/cases',
+  cases: '/cases',
+  case: '/cases/{caseId}',
+  evidence: '/cases/{caseId}/evidence',
+  conflicts: '/cases/{caseId}/conflicts',
+  reasoning: '/cases/{caseId}/analysis-runs',
+  timeline: '/cases/{caseId}/history',
+  evolution: '/cases/{caseId}/history',
+  status: '/cases/{caseId}',
+
+  // These UI concepts do not currently have a matching backend v1 route.
   missingEvidence: undefined,
-  reasoning: undefined,
-  timeline: undefined,
-  evolution: undefined,
-  status: undefined,
-  documents: undefined,
   notifications: undefined,
-  upload: undefined
+  documents: undefined,
+
+  upload: '/cases/{caseId}/documents/upload'
 };
 
-/** Login fields required by the backend auth contract (email, phone, OTP, …). */
 export interface AuthField {
   name: string;
   label: string;
   type: 'text' | 'email' | 'password' | 'tel';
 }
+
+// Authentication is configured through VITE_API_KEY for the current dev backend.
 export const authFields: AuthField[] = [];
 
-/** Multipart field name expected by the upload endpoint. */
-export const uploadFieldName: string | undefined = undefined;
+/** Multipart field required by POST /cases/{caseId}/documents/upload. */
+export const uploadFieldName = 'file' as const;
 
-/** Name of the case identifier field in backend case records (used to link cards). */
-export const caseIdField: string | undefined = undefined;
+/** Primary identifier returned by CaseRead. */
+export const caseIdField = 'id' as const;

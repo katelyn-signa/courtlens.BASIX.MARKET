@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
@@ -58,6 +59,15 @@ def create_app(settings: Optional[Settings] = None, *, registry: Optional[AgentR
 
     app = FastAPI(title=settings.app_name, version=__version__, description=_TITLE_DESC,
                   lifespan=lifespan)
+
+    # Frontend is a separate Vite origin during local development.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = session_factory

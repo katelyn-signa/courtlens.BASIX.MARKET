@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 let authToken: string | null = null;
-/** Kept in memory only. Use only if the backend contract specifies bearer tokens. */
+/** Kept in memory only for future bearer-token authentication. */
 export const setAuthToken = (t: string | null) => { authToken = t; };
 
 export const api = axios.create({
@@ -11,6 +11,12 @@ export const api = axios.create({
 
 api.interceptors.request.use((config) => {
   if (authToken) config.headers.set('Authorization', `Bearer ${authToken}`);
+
+  const apiKey = import.meta.env.VITE_API_KEY;
+  const actorId = import.meta.env.VITE_API_ACTOR_ID;
+  if (apiKey) config.headers.set('X-API-Key', apiKey);
+  if (actorId) config.headers.set('X-Actor-Id', actorId);
+
   return config;
 });
 

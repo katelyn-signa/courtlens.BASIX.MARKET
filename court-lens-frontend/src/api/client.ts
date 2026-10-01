@@ -21,4 +21,4 @@ api.interceptors.request.use((config) => {
 });
 
 export const resolvePath = (tpl: string, params: Record<string, string | undefined>) =>
-  tpl.replace(/\\{(\\w+)\\}/g, (_, k: string) => encodeURIComponent(params[k] ?? ''));
+  tpl.replace(/\{(\w+)\}/g, (_, k: string) => encodeURIComponent(params[k] ?? ''));

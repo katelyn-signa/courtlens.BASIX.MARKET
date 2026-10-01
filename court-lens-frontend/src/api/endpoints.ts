@@ -1,4 +1,4 @@
-/** CourtLens backend v1 API contract. */
+/** CourtLens backend v2 API contract. */
 export type EndpointKey =
   | 'login' | 'logout' | 'me'
   | 'dashboard' | 'cases' | 'case'

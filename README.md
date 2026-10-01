@@ -454,36 +454,10 @@ Endpoints: `POST /api/cases/{case_id}/agent/start`, `POST /api/cases/{case_id}/a
 
 Versions are immutable and events are append-only. Outputs remain workflow/evidence signals, not legal advice or decisions.
 
-## Setup
+## Legacy document-intelligence notes
 
-From the project directory, create the virtual environment:
+The phase-by-phase document-intelligence notes below describe earlier standalone endpoints. The integrated application described at the top of this README uses `backend-v2` as the shared runtime API.
 
-```powershell
-python -m venv .venv
-```
+For the current integrated stack, follow **Integrated Project Architecture → Run the integrated stack** above.
 
-Activate it in Windows PowerShell:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-Install dependencies:
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-## Run tests
-
-```powershell
-python -m pytest
-```
-
-## Start FastAPI
-
-```powershell
-python -m uvicorn app.main:app --reload
-```
-
-The health endpoint is available at http://127.0.0.1:8000/api/health.
+The legacy standalone endpoints are retained as historical documentation and should not be used as the frontend integration contract.

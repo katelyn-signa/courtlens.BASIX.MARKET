@@ -24,7 +24,8 @@ export const endpoints: Record<EndpointKey, string | undefined> = {
   status: '/cases/{caseId}',
 
   // These UI concepts do not currently have a matching backend v1 route.
-  // Backend conflicts explicitly include evidence-gap findings, so this is the closest supported resource.\n  missingEvidence: '/cases/{caseId}/conflicts',
+  // Backend conflicts explicitly include evidence-gap findings, so this is the closest supported resource.
+  missingEvidence: '/cases/{caseId}/conflicts',
   notifications: undefined,
   documents: undefined,
 

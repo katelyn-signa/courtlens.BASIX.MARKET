@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { UseQueryResult } from '@tanstack/react-query';
 import { AlertCircle, Inbox, Loader2 } from 'lucide-react';
-import { classifyError, type ErrorKind } from '../api/errors';
+import { classifyError, errorMessage, type ErrorKind } from '../api/errors';
 import { isEmpty } from '../api/adapters';
 
 export function LoadingState({ label = 'Loading…' }: { label?: string }) {
@@ -35,6 +35,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
       <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
       <div>
         <p>{messages[kind]}</p>
+        {kind === 'other' && <p className="mt-1 text-sm text-conflict/80">{errorMessage(error)}</p>}
         {onRetry && kind !== 'not_configured' && kind !== 'forbidden' && (
           <button onClick={onRetry} className="mt-2 text-sm underline">Try again</button>
         )}

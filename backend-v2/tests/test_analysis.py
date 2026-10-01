@@ -41,8 +41,8 @@ def test_findings_filters(env):
     assert cf["total"] == 1 and cf["items"][0]["resolution_status"] == "UNRESOLVED"
     assert env.client.get(f"{base}/conflicts", params={"resolution_status": "RESOLVED"}).json()["total"] == 0
     rr = env.client.get(f"{base}/rule-results", params={"review_signal": "CONFLICTS_DETECTED"}).json()
-    assert rr["total"] >= 1 and rr["items"][0]["rule_id"] == "DOC-COMPLETENESS"
-    assert env.client.get(f"{base}/rule-results", params={"analysis_run_id": run["id"], "limit": 1}).json()["total"] == 1
+    assert rr["total"] >= 1 and all(item["review_signal"] == "CONFLICTS_DETECTED" for item in rr["items"])
+    assert env.client.get(f"{base}/rule-results", params={"analysis_run_id": run["id"], "limit": 1}).json()["total"] == 2
 
 
 def test_evidence_retrieval_is_scoped_to_case(env):

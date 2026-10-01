@@ -35,7 +35,7 @@ def test_successful_pipeline_persists_everything(env):
     cf = env.client.get(f"/api/v1/cases/{c['id']}/conflicts").json()
     assert {x["conflict_type"] for x in cf["items"]} >= {"MISSING_EVIDENCE"}
     rr = env.client.get(f"/api/v1/cases/{c['id']}/rule-results").json()
-    assert rr["total"] >= 1 and "Simulated" in rr["items"][0]["notice"]
+    assert rr["total"] >= 1 and any("Simulated" in limitation for item in rr["items"] for limitation in item["limitations"])
     docs = env.client.get(f"/api/v1/cases/{c['id']}/documents").json()["items"]
     assert {d["processing_status"] for d in docs} == {"PROCESSED"}
     assert env.client.get(f"/api/v1/cases/{c['id']}").json()["analysis_needs_refresh"] is False
@@ -116,11 +116,9 @@ def test_invalid_agent_output_is_rejected_and_not_stored(make_env):
 def test_malformed_agent_payload_is_rejected(make_env):
     class BadDocAgent:
         name, version = "bad", "1"
-        def extract(self, request):
+        def run_ocr(self, request):
             return {"status": "SUCCESS", "agent_name": "bad", "agent_version": "1",
-                    "facts": [{"fact_type": "ARREST_DATE", "value": {"date": "31-02-2024"},
-                               "source_document_id": request.documents[0].document_id}],
-                    "document_results": [{"document_id": request.documents[0].document_id, "status": "SUCCESS"}]}
+                    "document_results": [{"document_id": request.documents[0].document_id, "status": "BAD"}]}
     e = make_env(registry=full_registry(document=BadDocAgent()))
     c = e.case(); e.doc(c["id"])
     run = e.run(c["id"]).json()
@@ -184,9 +182,10 @@ def test_retry_creates_linked_run_and_reuses_successful_stages(make_env):
     assert second["status"] == "COMPLETED" and second["parent_run_id"] == first["id"]
     assert second["attempt_number"] == 2 and second["trigger_type"] == "RETRY"
     st = {s["stage_name"]: s for s in second["stages"]}
-    assert st["document_intelligence"]["carried_over"] and st["conflict_detection"]["carried_over"]
-    assert st["document_intelligence"]["output_run_id"] == first["id"]
-    assert not st["reasoning"]["carried_over"]
+    assert st["ocr"]["carried_over"] and st["evidence_extraction"]["carried_over"] and st["conflict_detection"]["carried_over"]
+    assert st["ocr"]["output_run_id"] == first["id"]
+    assert st["evidence_extraction"]["output_run_id"] == first["id"]
+    assert not st["rule_evaluation"]["carried_over"] and not st["summary_generation"]["carried_over"]
     # earlier evidence was NOT duplicated by the retry; previous run is untouched
     assert e.client.get(f"/api/v1/cases/{c['id']}/evidence").json()["total"] == 2
     assert e.client.get(f"/api/v1/analysis-runs/{first['id']}").json()["status"] == "PARTIALLY_COMPLETED"
@@ -247,7 +246,7 @@ def test_run_validation(env):
     assert env.client.get("/api/v1/analysis-runs/bad").status_code == 422
     assert env.client.post("/api/v1/analysis-runs/run_" + "0" * 21 + "/retry").status_code == 404
     ok = env.run(c["id"], requested_modules=["conflict_detection"], document_ids=[d["id"]])
-    assert [s["stage_name"] for s in ok.json()["stages"]] == ["document_intelligence", "conflict_detection"]
+    assert [s["stage_name"] for s in ok.json()["stages"]] == ["ocr", "evidence_extraction", "conflict_detection"]
 
 
 def test_retry_rejected_for_completed_run(env):
@@ -318,8 +317,8 @@ def test_registry_loads_custom_agent_and_reports_bad_path(tmp_path):
                       reasoning_agent_class="no.such.module:Thing")
     d = build_default_registry(s).describe()
     assert d["conflict_detection"]["status"] == "CONFIGURED" and d["conflict_detection"]["source"] == "custom"
-    assert d["reasoning"]["status"] == "NOT_CONFIGURED" and "configuration_error" in d["reasoning"]
-    assert d["document_intelligence"]["status"] == "NOT_CONFIGURED"
+    assert d["rule_evaluation"]["status"] == "NOT_CONFIGURED" and "configuration_error" in d["rule_evaluation"]
+    assert d["summary_generation"]["status"] == "NOT_CONFIGURED" and "configuration_error" in d["summary_generation"]
 
 
 def test_registry_rejects_object_without_required_method():

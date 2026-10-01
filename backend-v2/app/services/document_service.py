@@ -117,6 +117,13 @@ class DocumentService:
             triggered = run.id
         return doc, True, triggered
 
+    def list_all(self, *, limit: int, offset: int,
+                 processing_status: Optional[DocumentProcessingStatus] = None,
+                 document_type: Optional[str] = None):
+        return self.docs.list_all(
+            limit=limit, offset=offset,
+            processing_status=processing_status, document_type=document_type)
+
     def status(self, document_id: str) -> tuple[Document, int]:
         doc = self.get_document(document_id)
         return doc, self.docs.evidence_count(doc.id)

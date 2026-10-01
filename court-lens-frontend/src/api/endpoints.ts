@@ -1,4 +1,4 @@
-/** CourtLens backend v1 API contract. */
+/** CourtLens backend v2 API contract. */
 export type EndpointKey =
   | 'login' | 'logout' | 'me'
   | 'dashboard' | 'cases' | 'case'
@@ -23,10 +23,11 @@ export const endpoints: Record<EndpointKey, string | undefined> = {
   evolution: '/cases/{caseId}/history',
   status: '/cases/{caseId}',
 
-  // These UI concepts do not currently have a matching backend v1 route.
-  missingEvidence: undefined,
-  notifications: undefined,
-  documents: undefined,
+  // These UI concepts do not currently have a dedicated backend v2 route.
+  // Backend conflicts explicitly include evidence-gap findings, so this is the closest supported resource.
+  missingEvidence: '/cases/{caseId}/conflicts',
+  notifications: '/notifications',
+  documents: '/documents',
 
   upload: '/cases/{caseId}/documents/upload'
 };
